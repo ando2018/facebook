@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths: ["a-publier/**"]
   workflow_dispatch: {}
+  # Rattrapage : une image sortie de rattrapage/ chaque heure, de 8 h à 22 h (heure de Paris).
+  schedule:
+    - cron: "17 6-20 * * *"
 
 concurrency:
   group: publier-facebook
@@ -28,6 +31,13 @@ jobs:
         with:
           node-version: 22
 
+      - name: Sortir une image du rattrapage
+        if: github.event_name == 'schedule'
+        run: |
+          f=$(ls rattrapage/*.png 2>/dev/null | sort | head -1)
+          if [ -z "$f" ]; then echo "Rattrapage terminé."; exit 0; fi
+          mv "$f" "${f%.png}.json" a-publier/
+
       - name: Publier les Reels en attente
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
@@ -40,7 +50,7 @@ jobs:
         run: |
           git config user.name "blague-du-jour-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add -A a-publier publies
+          git add -A a-publier publies rattrapage
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "Publié sur Facebook [skip ci]"
           git pull --rebase
