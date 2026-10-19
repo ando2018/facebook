@@ -1,4 +1,5 @@
-// Publie en Reel sur la Page Facebook chaque vidéo en attente dans a-publier/.
+// Publie sur la Page Facebook chaque fichier en attente dans a-publier/ :
+// une vidéo .mp4 en Reel, une image .png/.jpg en photo.
 // Chaque vidéo arrive avec un fichier .json du même nom : { "titre": "...", "legende": "..." }
 // Après publication, la vidéo est retirée et sa fiche rangée dans publies/ avec l'ID du Reel.
 //
@@ -69,9 +70,20 @@ async function publierReel(fichierVideo, { titre, legende }) {
   if (titre) params.title = titre;
   await appel(`${graph}/${PAGE_ID}/video_reels`, { method: "POST", body: new URLSearchParams(params) });
 
-  // 4. Attendre la fin du traitement côté Facebook (max ~5 min)
+  // 4. Attendre la fin du traitement côté Facebook (max ~5 min).
+  // La publication est déjà demandée : une lecture du statut qui échoue (vidéo pas
+  // encore visible) ne doit pas faire repartir la vidéo, sinon elle sera publiée deux fois.
+  let illisible = 0;
   for (let i = 0; i < 30; i++) {
-    const s = await appel(`${graph}/${videoId}?fields=status&access_token=${encodeURIComponent(TOKEN)}`);
+    let s;
+    try {
+      s = await appel(`${graph}/${videoId}?fields=status&access_token=${encodeURIComponent(TOKEN)}`);
+    } catch (e) {
+      console.warn(`  … statut illisible pour l'instant (${e.message.slice(0, 120)})`);
+      if (++illisible >= 3) break; // déjà publiée : on la range quand même
+      await new Promise((ok) => setTimeout(ok, 10_000));
+      continue;
+    }
     const v = s.status?.video_status;
     if (v === "ready" || v === "published") break;
     if (v === "error") throw new Error(`Traitement refusé par Facebook : ${JSON.stringify(s.status)}`);
@@ -80,7 +92,21 @@ async function publierReel(fichierVideo, { titre, legende }) {
   return videoId;
 }
 
-const fichiers = (await readdir(ATTENTE).catch(() => [])).filter((f) => f.endsWith(".mp4")).sort();
+// Image (.png/.jpg) : publiée en photo sur la Page, avec la légende.
+async function publierPhoto(fichierImage, { legende }) {
+  const donnees = await readFile(fichierImage);
+  const type = /\.png$/i.test(fichierImage) ? "image/png" : "image/jpeg";
+  const form = new FormData();
+  form.append("source", new Blob([donnees], { type }), path.basename(fichierImage));
+  form.append("caption", legende || "");
+  form.append("published", STATE === "DRAFT" ? "false" : "true");
+  form.append("access_token", TOKEN);
+  const r = await appel(`${graph}/${PAGE_ID}/photos`, { method: "POST", body: form });
+  return r.post_id || r.id;
+}
+
+const MEDIAS = /\.(mp4|png|jpe?g)$/i;
+const fichiers = (await readdir(ATTENTE).catch(() => [])).filter((f) => MEDIAS.test(f)).sort();
 if (!fichiers.length) {
   console.log("Rien à publier.");
   process.exit(0);
@@ -91,16 +117,17 @@ let echecs = 0;
 
 for (const f of fichiers) {
   const video = path.join(ATTENTE, f);
-  const fiche = video.replace(/\.mp4$/, ".json");
+  const fiche = video.replace(MEDIAS, ".json");
+  const estVideo = /\.mp4$/i.test(f);
   try {
     const meta = JSON.parse(await readFile(fiche, "utf8").catch(() => "{}"));
     const taille = (await stat(video)).size;
     console.log(`→ ${f} (${(taille / 1e6).toFixed(1)} Mo) en ${STATE}…`);
-    const id = await publierReel(video, meta);
-    console.log(`  ✓ Reel ${id}`);
+    const id = estVideo ? await publierReel(video, meta) : await publierPhoto(video, meta);
+    console.log(`  ✓ ${estVideo ? "Reel" : "Photo"} ${id}`);
     await writeFile(
       path.join(FAITS, path.basename(fiche)),
-      JSON.stringify({ ...meta, video: f, reel_id: id, etat: STATE, le: new Date().toISOString() }, null, 2) + "\n",
+      JSON.stringify({ ...meta, video: f, [estVideo ? "reel_id" : "post_id"]: id, etat: STATE, le: new Date().toISOString() }, null, 2) + "\n",
     );
     await rm(fiche, { force: true });
     await rm(video);
