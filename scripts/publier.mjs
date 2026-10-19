@@ -69,9 +69,20 @@ async function publierReel(fichierVideo, { titre, legende }) {
   if (titre) params.title = titre;
   await appel(`${graph}/${PAGE_ID}/video_reels`, { method: "POST", body: new URLSearchParams(params) });
 
-  // 4. Attendre la fin du traitement côté Facebook (max ~5 min)
+  // 4. Attendre la fin du traitement côté Facebook (max ~5 min).
+  // La publication est déjà demandée : une lecture du statut qui échoue (vidéo pas
+  // encore visible) ne doit pas faire repartir la vidéo, sinon elle sera publiée deux fois.
+  let illisible = 0;
   for (let i = 0; i < 30; i++) {
-    const s = await appel(`${graph}/${videoId}?fields=status&access_token=${encodeURIComponent(TOKEN)}`);
+    let s;
+    try {
+      s = await appel(`${graph}/${videoId}?fields=status&access_token=${encodeURIComponent(TOKEN)}`);
+    } catch (e) {
+      console.warn(`  … statut illisible pour l'instant (${e.message.slice(0, 120)})`);
+      if (++illisible >= 3) break; // déjà publiée : on la range quand même
+      await new Promise((ok) => setTimeout(ok, 10_000));
+      continue;
+    }
     const v = s.status?.video_status;
     if (v === "ready" || v === "published") break;
     if (v === "error") throw new Error(`Traitement refusé par Facebook : ${JSON.stringify(s.status)}`);
