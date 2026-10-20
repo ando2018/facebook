@@ -34,6 +34,8 @@ jobs:
       - name: Sortir une image du rattrapage
         if: github.event_name == 'schedule'
         run: |
+          # Une seule image du rattrapage à la fois : si la précédente n'est pas encore partie, on attend.
+          if ls a-publier/image-drole-*-[0-9][0-9][0-9].png >/dev/null 2>&1; then echo "Image précédente encore en attente."; exit 0; fi
           f=$(ls rattrapage/*.png 2>/dev/null | sort | head -1)
           if [ -z "$f" ]; then echo "Rattrapage terminé."; exit 0; fi
           mv "$f" "${f%.png}.json" a-publier/
